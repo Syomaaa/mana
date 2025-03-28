@@ -1,16 +1,17 @@
 -- lua/mana/cl_roulette.lua
--- Système de roulette pour l'addon Mana (avec utilisation des assets graphiques fournis)
+-- Système de roulette pour l'addon Mana (avec animation naturelle)
 
 local PANEL = {}
 
 -- Configuration de la roulette
 local ROULETTE_WIDTH = 1600  -- Taille de la fenêtre adaptée au background
 local ROULETTE_HEIGHT = 900
-local ITEM_WIDTH = 180      -- Augmenté de 130 à 180
-local ITEM_HEIGHT = 180     -- Augmenté de 130 à 180
-local ITEM_SPACING = 15     -- Augmenté de 10 à 15
-local VISIBLE_ITEMS = 5
-local SPIN_DURATION = 5 -- Durée de l'animation en secondes
+local ITEM_WIDTH = 180      -- Taille des cartes de magie
+local ITEM_HEIGHT = 180
+local ITEM_SPACING = 15
+local VISIBLE_ITEMS = 7     -- Nombre d'items visibles à la fois
+local SPIN_DURATION = 8     -- Durée fixe de l'animation en secondes
+local SPIN_VARIANCE = 0.5   -- Variation aléatoire de la durée (± secondes)
 local SPIN_SOUNDS = {
     start = Sound("ui/buttonrollover.wav"),
     spinning = Sound("ui/buttonclick.wav"),
@@ -31,17 +32,22 @@ local ASSETS = {
     button = Material("materials/reroll/lancer.png", "noclamp smooth"),
     close = Material("materials/reroll/close.png", "noclamp smooth"),
     frame = Material("materials/reroll/wiphexa.png", "noclamp smooth"),
-    magic_bg = Material("materials/reroll/magic_bg.png", "noclamp smooth") -- Image de fond commune pour toutes les magies
-}
-
--- Assets
-local ASSETS = {
-    background = Material("materials/reroll/background_hexa.png", "noclamp smooth"),
-    button = Material("materials/reroll/lancer.png", "noclamp smooth"),
-    close = Material("materials/reroll/close.png", "noclamp smooth"),
-    frame = Material("materials/reroll/wiphexa.png", "noclamp smooth"),
     magic_bg = Material("materials/reroll/grimoire.png", "noclamp smooth") -- Image de fond commune pour toutes les magies
 }
+
+-- Variables globales du panel
+local isSpinning = false
+local spinStartTime = 0
+local spinEndTime = 0
+local allItems = {}
+local visibleItems = {}
+local selectedPower = nil
+local startOffset = 0
+local currentOffset = 0
+local currentVelocity = 0
+local initialVelocity = 2000  -- Vitesse initiale élevée (pixels/seconde)
+local finalPosition = 0
+local originalItemsWeight = {}  -- Table pour stocker les poids des items originaux
 
 function PANEL:Init()
     self:SetSize(ROULETTE_WIDTH, ROULETTE_HEIGHT)
@@ -61,11 +67,20 @@ function PANEL:Init()
     self.RoulettePanel = vgui.Create("DPanel", self)
     self.RoulettePanel:SetPos(
         frameX + (FRAME_WIDTH - rouletteWidth) / 2, 
-        frameY + (FRAME_HEIGHT * 0.58 - ITEM_HEIGHT / 2) -- Déplacé un peu plus bas (58% de la hauteur au lieu de 50%)
+        frameY + (FRAME_HEIGHT * 0.55 - ITEM_HEIGHT / 2) -- Déplacé un peu plus bas (55% de la hauteur au lieu de 50%)
     )
     self.RoulettePanel:SetSize(rouletteWidth, ITEM_HEIGHT)
-    self.RoulettePanel.Paint = function(s, w, h)
-        -- On ne dessine rien ici, juste le conteneur pour les items
+    
+    -- La peinture de la zone de roulette - maintenant transparente sauf pour le contenu
+    self.RoulettePanel.Paint = function(s, w, h) 
+        -- La zone de la roulette est masquée au-delà de ses bords
+        local x1, y1 = s:LocalToScreen(0, 0)
+        local x2, y2 = s:LocalToScreen(w, h)
+        render.SetScissorRect(x1, y1, x2, y2, true)
+    end
+    
+    self.RoulettePanel.PaintOver = function(s, w, h)
+        render.SetScissorRect(0, 0, 0, 0, false)
     end
     
     -- Bouton pour lancer la roulette
@@ -80,10 +95,18 @@ function PANEL:Init()
         surface.SetDrawColor(255, 255, 255, 255)
         surface.SetMaterial(ASSETS.button)
         surface.DrawTexturedRect(0, 0, w, h)
+        
+        -- Assombrir si désactivé pendant le spin
+        if isSpinning then
+            surface.SetDrawColor(100, 100, 100, 100)
+            surface.DrawRect(0, 0, w, h)
+        end
     end
     
     self.LaunchBtn.DoClick = function()
-        self:StartSpin()
+        if not isSpinning then
+            self:StartSpin()
+        end
     end
     
     -- Bouton fermer
@@ -95,6 +118,12 @@ function PANEL:Init()
         surface.SetDrawColor(255, 255, 255, 255)
         surface.SetMaterial(ASSETS.close)
         surface.DrawTexturedRect(0, 0, w, h)
+        
+        -- Légère mise en évidence au survol
+        if s:IsHovered() and not isSpinning then
+            surface.SetDrawColor(255, 255, 255, 20)
+            surface.DrawRect(0, 0, w, h)
+        end
     end
     
     self.CloseBtn.DoClick = function()
@@ -105,44 +134,91 @@ function PANEL:Init()
     -- Initialiser les données
     self:InitializeItems()
     self:CreateItems()
+    
+    -- Réinitialiser les variables globales
+    isSpinning = false
+    spinStartTime = 0
+    spinEndTime = 0
+    currentVelocity = 0
+    finalPosition = 0
+end
+
+function PANEL:PrepareRoulette()
+    -- Cette fonction distribue les magies dans la roulette selon leur rareté
+    -- Plus une magie est rare, moins elle apparaîtra dans la roulette
+    
+    -- Récupérer toutes les magies depuis la config
+    local originalItems = {}
+    local totalWeight = 0
+    
+    -- D'abord, calculer le poids total et stocker les données originales
+    for magicName, magicData in pairs(Mana.Config.Magic) do
+        local rarity = magicData.Rarity or 100
+        table.insert(originalItems, {
+            name = magicName,
+            rarity = rarity
+        })
+        originalItemsWeight[magicName] = rarity
+        totalWeight = totalWeight + rarity
+    end
+    
+    -- Ensuite, créer la liste d'items avec répétition basée sur la rareté
+    allItems = {}
+    
+    -- Table pour compter le nombre d'occurrences de chaque magie
+    local countByMagic = {}
+    
+    -- Pour chaque magie, déterminer combien de fois elle apparaît dans la roulette
+    for _, item in ipairs(originalItems) do
+        -- Normaliser le poids - plus la rareté est élevée, plus l'item apparaît souvent
+        local normalizedWeight = item.rarity / totalWeight
+        
+        -- Calculer combien de fois cet item devrait apparaître dans la roulette finale
+        -- Une magie commune (rareté 95) apparaîtra beaucoup plus souvent qu'une magie légendaire (rareté 0.05)
+        local itemCount = math.max(1, math.floor(normalizedWeight * 1000))
+        countByMagic[item.name] = itemCount
+        
+        -- Ajouter cet item le nombre de fois calculé
+        for i = 1, itemCount do
+            table.insert(allItems, {
+                name = item.name,
+                rarity = item.rarity
+            })
+        end
+    end
+    
+    -- Mélanger la liste pour que les items de même type ne soient pas regroupés
+    table.Shuffle(allItems)
+    
+    -- Log pour debug
+    print("Roulette préparée avec "..#allItems.." positions")
+    for name, count in pairs(countByMagic) do
+        print(name..": "..count.." occurrences")
+    end
 end
 
 function PANEL:InitializeItems()
-    -- Récupérer toutes les magies depuis la config
-    allItems = {}
-    local totalWeight = 0
-    
-    for magicName, magicData in pairs(Mana.Config.Magic) do
-        local rarity = magicData.Rarity or 100
-        local weight = rarity / 10 -- On convertit la rareté en poids pour la sélection aléatoire
-        
-        table.insert(allItems, {
-            name = magicName,
-            weight = weight,
-            rarity = rarity
-        })
-        
-        totalWeight = totalWeight + weight
-    end
-    
-    -- On s'assure que tous les items ont un poids relatif
-    for _, item in ipairs(allItems) do
-        item.relativeWeight = item.weight / totalWeight
-    end
-    
-    -- On mélange les items pour commencer
-    table.Shuffle(allItems)
+    -- Cette nouvelle méthode prépare la roulette avec une distribution naturelle
+    self:PrepareRoulette()
 end
 
 function PANEL:CreateItems()
     visibleItems = {}
-    local rouletteContent = vgui.Create("DPanel", self.RoulettePanel)
-    rouletteContent:SetSize(ITEM_WIDTH * #allItems + ITEM_SPACING * (#allItems - 1), ITEM_HEIGHT)
-    rouletteContent:SetPos(0, 0)
-    rouletteContent.Paint = function() end
     
+    -- Création du conteneur de la roulette
+    if IsValid(self.ContentPanel) then
+        self.ContentPanel:Remove()
+    end
+    
+    self.ContentPanel = vgui.Create("DPanel", self.RoulettePanel)
+    local totalWidth = ITEM_WIDTH * #allItems + ITEM_SPACING * (#allItems - 1)
+    self.ContentPanel:SetSize(totalWidth, ITEM_HEIGHT)
+    self.ContentPanel:SetPos(0, 0)
+    self.ContentPanel.Paint = function() end
+    
+    -- Création des éléments de la roulette
     for i, item in ipairs(allItems) do
-        local itemPanel = vgui.Create("DPanel", rouletteContent)
+        local itemPanel = vgui.Create("DPanel", self.ContentPanel)
         itemPanel:SetSize(ITEM_WIDTH, ITEM_HEIGHT)
         itemPanel:SetPos((i-1) * (ITEM_WIDTH + ITEM_SPACING), 0)
         
@@ -158,7 +234,7 @@ function PANEL:CreateItems()
         end
         
         itemPanel.Paint = function(s, w, h)
-            -- Fond de base (carré noir)
+            -- Fond de base
             draw.RoundedBox(0, 0, 0, w, h, Color(0, 0, 0, 255))
             
             -- Utiliser l'image de fond commune
@@ -176,6 +252,49 @@ function PANEL:CreateItems()
             -- Border with rarity color
             surface.SetDrawColor(rarityColor)
             surface.DrawOutlinedRect(0, 0, w, h, 2)
+            
+            -- Effet spécial pour l'item au centre lors du ralentissement
+            if isSpinning then
+                -- Trouver si cet item est au centre
+                local centerX = s:GetParent():GetParent():GetWide() / 2
+                local myPos = s:GetX() + s:GetParent():GetX()
+                local myCenterX = myPos + w/2
+                local distanceFromCenter = math.abs(myCenterX - centerX)
+                
+                -- Highlight des items proches du centre pendant le ralentissement
+                local currentTime = SysTime()
+                local progress = math.Clamp((currentTime - spinStartTime) / (spinEndTime - spinStartTime), 0, 1)
+                
+                if progress > 0.7 then
+                    local highlightIntensity = 0
+                    
+                    -- Items très proches du centre
+                    if distanceFromCenter < ITEM_WIDTH * 0.5 then
+                        -- Effet de pulsation pour l'item central
+                        local pulse = math.sin(SysTime() * 15) * 0.5 + 0.5
+                        highlightIntensity = math.min(1, (progress - 0.7) * 5) * (0.6 + 0.4 * pulse)
+                        
+                        -- Effet spécial pour l'item final
+                        if progress > 0.95 then
+                            surface.SetDrawColor(rarityColor.r, rarityColor.g, rarityColor.b, 155 + 100 * pulse)
+                            surface.DrawOutlinedRect(0, 0, w, h, 3)
+                            surface.DrawOutlinedRect(2, 2, w-4, h-4, 1)
+                        end
+                    end
+                    -- Items voisins proches (effet atténué)
+                    else if distanceFromCenter < ITEM_WIDTH * 1.2 then
+                        local proximityFactor = 1 - (distanceFromCenter / (ITEM_WIDTH * 1.2))
+                        highlightIntensity = math.min(1, (progress - 0.7) * 5) * proximityFactor * 0.5
+                    end
+                    
+                    -- Appliquer l'effet de surbrillance
+                    if highlightIntensity > 0 then
+                        surface.SetDrawColor(rarityColor.r, rarityColor.g, rarityColor.b, 
+                                            math.min(200, 50 + 150 * highlightIntensity))
+                        surface.DrawOutlinedRect(0, 0, w, h, 2)
+                    end
+                end
+            end
         end
         
         table.insert(visibleItems, {
@@ -184,16 +303,33 @@ function PANEL:CreateItems()
         })
     end
     
-    self.ContentPanel = rouletteContent
-    currentOffset = 0
+    -- Position initiale aléatoire
+    local centerX = self.RoulettePanel:GetWide() / 2
+    currentOffset = centerX - math.random(10, #allItems - 10) * (ITEM_WIDTH + ITEM_SPACING)
     self:UpdateItemPositions()
 end
 
 function PANEL:UpdateItemPositions()
     if IsValid(self.ContentPanel) then
-        local x = currentOffset
-        self.ContentPanel:SetPos(x, 0)
+        self.ContentPanel:SetPos(currentOffset, 0)
     end
+end
+
+-- Fonction pour trouver l'item au centre de la roulette
+function PANEL:GetCenterItem()
+    local centerX = self.RoulettePanel:GetWide() / 2
+    local itemSize = ITEM_WIDTH + ITEM_SPACING
+    
+    for i, item in ipairs(allItems) do
+        local itemPos = (i - 0.5) * itemSize + currentOffset
+        local distanceFromCenter = math.abs(itemPos - centerX)
+        
+        if distanceFromCenter < itemSize / 2 then
+            return item, i
+        end
+    end
+    
+    return nil, 0
 end
 
 function PANEL:StartSpin()
@@ -210,40 +346,63 @@ function PANEL:StartSpin()
     
     isSpinning = true
     
-    -- Select a magic based on rarity
+    -- Choix aléatoire pondéré pour déterminer la magie préférée
     local rnd = math.random()
     local cumulativeWeight = 0
-    selectedPower = nil
+    local totalWeight = 0
     
-    for i, item in ipairs(allItems) do
-        cumulativeWeight = cumulativeWeight + item.relativeWeight
+    -- Calculer le poids total
+    for _, weight in pairs(originalItemsWeight) do
+        totalWeight = totalWeight + weight
+    end
+    
+    -- Sélectionner la magie basée sur sa probabilité
+    local desiredPower = nil
+    
+    for magicName, weight in pairs(originalItemsWeight) do
+        local normalizedWeight = weight / totalWeight
+        cumulativeWeight = cumulativeWeight + normalizedWeight
         
         if rnd <= cumulativeWeight then
-            selectedPower = item.name
-            
-            -- Position de l'item sélectionné (centré)
-            local centerPos = self.RoulettePanel:GetWide() / 2 - ITEM_WIDTH / 2
-            targetOffset = centerPos - (i-1) * (ITEM_WIDTH + ITEM_SPACING)
+            desiredPower = magicName
             break
         end
     end
     
-    if not selectedPower then
-        -- Fallback if something went wrong
-        selectedPower = allItems[1].name
-        targetOffset = self.RoulettePanel:GetWide() / 2 - ITEM_WIDTH / 2
+    if not desiredPower then
+        -- Fallback au cas où
+        local keys = table.GetKeys(originalItemsWeight)
+        desiredPower = keys[1]
     end
     
-    -- Setup animation
-    spinStartTime = SysTime()
-    spinEndTime = spinStartTime + SPIN_DURATION
+    -- Noter la magie désirée, mais ne pas forcer son apparition
+    -- Elle sera simplement plus probable dans la roulette
+    print("Magie désirée: " .. desiredPower) -- Debug
     
-    -- Function to select the magic when spinning ends
+    -- Définir une position de départ et une vitesse initiale
+    startOffset = currentOffset
+    currentVelocity = initialVelocity
+    
+    -- Configurer l'animation avec une durée fixe
+    local duration = SPIN_DURATION + math.random(-SPIN_VARIANCE * 100, SPIN_VARIANCE * 100) / 100
+    spinStartTime = SysTime()
+    spinEndTime = spinStartTime + duration
+    
+    -- Fonction pour finaliser l'animation
     local function finishSpin()
         isSpinning = false
         
         -- Play stop sound
         surface.PlaySound(SPIN_SOUNDS.stop)
+        
+        -- Trouver l'item qui est au centre à la fin
+        local finalItem, finalIndex = self:GetCenterItem()
+        if finalItem then
+            selectedPower = finalItem.name
+        else
+            -- Fallback au cas où
+            selectedPower = desiredPower
+        end
         
         -- Send result to server
         net.Start("Mana:RequestPower")
@@ -251,11 +410,13 @@ function PANEL:StartSpin()
         net.WriteString(selectedPower) -- Send the selected magic name
         net.SendToServer()
         
-        -- Show result
-        Derma_Message("Vous avez obtenu la magie: " .. selectedPower, "Félicitations!", "OK")
+        -- Show result with a delay for dramatic effect
+        timer.Simple(0.5, function()
+            Derma_Message("Vous avez obtenu la magie: " .. selectedPower, "Félicitations!", "OK")
+        end)
         
         -- Close the panel after a short delay
-        timer.Simple(1, function()
+        timer.Simple(2, function()
             if IsValid(self) then
                 self:Remove()
             end
@@ -263,25 +424,47 @@ function PANEL:StartSpin()
     end
     
     -- Setup end timer
-    timer.Simple(SPIN_DURATION, finishSpin)
+    timer.Simple(duration, finishSpin)
 end
 
 function PANEL:Think()
     if isSpinning then
         local currentTime = SysTime()
-        local progress = math.Clamp((currentTime - spinStartTime) / SPIN_DURATION, 0, 1)
+        local elapsed = currentTime - spinStartTime
+        local duration = spinEndTime - spinStartTime
+        local progress = math.Clamp(elapsed / duration, 0, 1)
         
-        -- Easing function for smooth deceleration
-        local easeOutCubic = 1 - (1 - progress) ^ 3
+        -- Simuler un comportement physique naturel
+        -- La vitesse diminue selon une courbe de friction
         
-        -- Calculate the current position based on the easing
-        currentOffset = Lerp(easeOutCubic, currentOffset, targetOffset)
+        if progress < 0.1 then
+            -- Phase initiale: vitesse maximale constante
+            -- Ne pas changer la vitesse
+        elseif progress < 0.8 then
+            -- Phase de ralentissement principal
+            -- La vitesse diminue de manière exponentielle
+            local deceleration = currentVelocity * (0.05 + 0.2 * progress)
+            currentVelocity = math.max(0, currentVelocity - deceleration * FrameTime())
+        else
+            -- Phase finale: ralentissement avec micro-oscillations
+            local deceleration = currentVelocity * 1.2
+            currentVelocity = math.max(0, currentVelocity - deceleration * FrameTime())
+            
+            -- Ajouter de légères oscillations qui diminuent
+            local oscillationFactor = (1 - progress) * 5
+            local oscillation = math.sin(progress * 20) * oscillationFactor
+            currentVelocity = currentVelocity + oscillation
+        end
         
-        -- Update positions
+        -- Déplacer les items selon la vitesse actuelle
+        currentOffset = currentOffset + currentVelocity * FrameTime()
+        
+        -- Mettre à jour les positions
         self:UpdateItemPositions()
         
-        -- Play spinning sound at intervals during the first half
-        if progress < 0.5 and math.floor(progress * 20) % 2 == 0 and math.floor(progress * 20) ~= math.floor((progress - FrameTime()) * 20) then
+        -- Jouer des sons pendant le défilement avec une fréquence qui diminue progressivement
+        local soundThreshold = math.max(100, currentVelocity / 5)
+        if math.random(1, 1000) < soundThreshold and progress < 0.9 then
             surface.PlaySound(SPIN_SOUNDS.spinning)
         end
     end
@@ -295,7 +478,24 @@ function PANEL:Paint(w, h)
     surface.SetMaterial(ASSETS.background)
     surface.DrawTexturedRect(0, 0, w, h)
     
-    -- Draw frame around roulette area using your asset
+    -- Ne pas dessiner l'encadrement ici, il sera dessiné dans PaintOver
+    -- pour être au-dessus de la roulette
+    
+    -- Calculer la position de l'encadrement (pour référence)
+    local frameX = (w - FRAME_WIDTH) / 2
+    local frameY = (h - FRAME_HEIGHT) / 2
+    
+    -- Draw rerolls remaining
+    local rerolls = LocalPlayer():GetManaRerolls()
+    draw.SimpleText("Rerolls restants: " .. rerolls, "mana.title", w/2, frameY + FRAME_HEIGHT + BUTTON_HEIGHT + 40, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    
+    -- Afficher le titre
+    draw.SimpleText("Roulette des Magies", "mana.title", w/2, frameY - 40, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+end
+
+-- Fonction pour dessiner la ligne d'arrêt et l'encadrement par-dessus les magies
+function PANEL:PaintOver(w, h)
+    -- D'abord dessiner l'encadrement par-dessus la roulette
     local frameX = (w - FRAME_WIDTH) / 2
     local frameY = (h - FRAME_HEIGHT) / 2
     
@@ -303,9 +503,80 @@ function PANEL:Paint(w, h)
     surface.SetMaterial(ASSETS.frame)
     surface.DrawTexturedRect(frameX, frameY, FRAME_WIDTH, FRAME_HEIGHT)
     
-    -- Draw rerolls remaining
-    local rerolls = LocalPlayer():GetManaRerolls()
-    draw.SimpleText("Rerolls restants: " .. rerolls, "mana.title", w/2, frameY + FRAME_HEIGHT + BUTTON_HEIGHT + 40, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    -- Draw the center indicator (selection line)
+    local centerX = self.RoulettePanel:GetX() + self.RoulettePanel:GetWide() / 2
+    local indicatorTop = self.RoulettePanel:GetY() - 20
+    local indicatorBottom = self.RoulettePanel:GetY() + self.RoulettePanel:GetTall() + 20
+    
+    -- Effet de brillance
+    for i = 3, 1, -1 do
+        local alpha = 150 - i * 40
+        surface.SetDrawColor(255, 255, 255, alpha)
+        surface.DrawLine(centerX - i, indicatorTop, centerX - i, indicatorBottom)
+        surface.DrawLine(centerX + i, indicatorTop, centerX + i, indicatorBottom)
+    end
+    
+    -- Ligne blanche centrale
+    surface.SetDrawColor(255, 255, 255, 255)
+    surface.DrawLine(centerX, indicatorTop, centerX, indicatorBottom)
+    
+    -- Petits triangles blancs en haut et en bas
+    local triangleSize = 6
+    draw.NoTexture()
+    
+    -- Pulse effect pour les triangles
+    local pulse = 0
+    if isSpinning then
+        pulse = math.sin(SysTime() * 5) * 0.3 + 0.7
+    else
+        pulse = 1
+    end
+    
+    -- Top triangle
+    surface.SetDrawColor(255, 255, 255, 255 * pulse)
+    surface.DrawPoly({
+        {x = centerX, y = indicatorTop},
+        {x = centerX - triangleSize, y = indicatorTop - triangleSize},
+        {x = centerX + triangleSize, y = indicatorTop - triangleSize}
+    })
+    
+    -- Bottom triangle
+    surface.SetDrawColor(255, 255, 255, 255 * pulse)
+    surface.DrawPoly({
+        {x = centerX, y = indicatorBottom},
+        {x = centerX - triangleSize, y = indicatorBottom + triangleSize},
+        {x = centerX + triangleSize, y = indicatorBottom + triangleSize}
+    })
+end
+
+-- Fonction pour forcer la sélection d'une magie spécifique (pour les admins)
+function PANEL:ForceSelectMagic(magicName)
+    if isSpinning then return end
+    
+    -- Pour les sélections forcées (admins), nous utilisons une approche légèrement différente
+    -- Trouver les occurrences de la magie spécifiée
+    local occurrences = {}
+    for i, item in ipairs(allItems) do
+        if item.name == magicName then
+            table.insert(occurrences, i)
+        end
+    end
+    
+    if #occurrences > 0 then
+        -- Choisir une occurrence au hasard
+        local randomIndex = occurrences[math.random(1, #occurrences)]
+        
+        -- Centrer légèrement à gauche de cette occurrence pour que la roulette s'arrête dessus
+        local centerX = self.RoulettePanel:GetWide() / 2
+        currentOffset = centerX - (randomIndex - 0.5) * (ITEM_WIDTH + ITEM_SPACING)
+        currentOffset = currentOffset - 1000  -- Décaler un peu pour l'animation
+        
+        -- Lancer le spin
+        self:StartSpin()
+    else
+        -- Si aucune occurrence n'est trouvée, créer un spin normal
+        self:StartSpin()
+    end
 end
 
 vgui.Register("Mana.Roulette", PANEL, "DFrame")
@@ -338,7 +609,8 @@ end)
 net.Receive("Mana:SetSelectedPower", function()
     local selectedMagic = net.ReadString()
     
-    if IsValid(Mana.RoulettePanel) then
-        Mana.RoulettePanel:ForceSelectMagic(selectedMagic)
+    local roulettePanel = vgui.Create("Mana.Roulette")
+    if IsValid(roulettePanel) then
+        roulettePanel:ForceSelectMagic(selectedMagic)
     end
 end)

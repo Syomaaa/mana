@@ -342,7 +342,7 @@ function PANEL:StartSpin()
         return
     end
     
-    -- Play start sound
+    -- Jouer le son de démarrage
     surface.PlaySound(SPIN_SOUNDS.start)
     
     isSpinning = true
@@ -393,7 +393,7 @@ function PANEL:StartSpin()
     local function finishSpin()
         isSpinning = false
         
-        -- Play stop sound
+        -- Jouer le son d'arrêt
         surface.PlaySound(SPIN_SOUNDS.stop)
         
         -- Trouver l'item qui est au centre à la fin
@@ -405,26 +405,22 @@ function PANEL:StartSpin()
             selectedPower = desiredPower
         end
         
-        -- Send result to server
+        -- Envoyer le résultat au serveur
         net.Start("Mana:RequestPower")
         net.WriteBool(isFirst)
-        net.WriteString(selectedPower) -- Send the selected magic name
+        net.WriteString(selectedPower) -- Envoyer le nom de la magie sélectionnée
         net.SendToServer()
         
-        -- Show result with a delay for dramatic effect
+        -- Afficher le résultat avec un délai pour l'effet dramatique
         timer.Simple(0.5, function()
             Derma_Message("Vous avez obtenu la magie: " .. selectedPower, "Félicitations!", "OK")
         end)
         
-        -- Close the panel after a short delay
-        timer.Simple(2, function()
-            if IsValid(self) then
-                self:Remove()
-            end
-        end)
+        -- NE PAS fermer le panneau automatiquement pour permettre plusieurs tirages
+        -- Les lignes supprimées étaient ici
     end
     
-    -- Setup end timer
+    -- Configurer le timer de fin
     timer.Simple(duration, finishSpin)
 end
 
@@ -474,7 +470,7 @@ end
 function PANEL:Paint(w, h)
     Derma_DrawBackgroundBlur(self, self.Sys)
     
-    -- Draw background using your asset
+    -- Dessiner le fond avec l'asset
     surface.SetDrawColor(255, 255, 255, 255)
     surface.SetMaterial(ASSETS.background)
     surface.DrawTexturedRect(0, 0, w, h)
@@ -483,19 +479,19 @@ function PANEL:Paint(w, h)
     local frameX = (w - FRAME_WIDTH) / 2
     local frameY = (h - FRAME_HEIGHT) / 2
     
-    -- Draw rerolls remaining
+    -- Afficher les rerolls restants
     local rerolls = LocalPlayer():GetManaRerolls()
     draw.SimpleText("Rerolls restants: " .. rerolls, "mana.title", w/2, frameY + FRAME_HEIGHT + BUTTON_HEIGHT + 40, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     
-    -- IMPORTANT: Draw the frame BEFORE the button is rendered in PaintOver
-    -- This is the key change to make sure the frame is behind the button
+    -- IMPORTANT: Dessiner le cadre AVANT que le bouton soit rendu dans PaintOver
+    -- C'est le changement clé pour s'assurer que le cadre est derrière le bouton
     surface.SetDrawColor(255, 255, 255, 255)
     surface.SetMaterial(ASSETS.frame)
     surface.DrawTexturedRect(frameX, frameY, FRAME_WIDTH, FRAME_HEIGHT)
 end
 
 function PANEL:PaintOver(w, h)
-    -- Draw the center indicator (selection line) only
+    -- Dessiner l'indicateur central (ligne de sélection) seulement
     local centerX = self.RoulettePanel:GetX() + self.RoulettePanel:GetWide() / 2
     local indicatorTop = self.RoulettePanel:GetY() - 20
     local indicatorBottom = self.RoulettePanel:GetY() + self.RoulettePanel:GetTall() + 20
@@ -516,7 +512,7 @@ function PANEL:PaintOver(w, h)
     local triangleSize = 6
     draw.NoTexture()
     
-    -- Pulse effect pour les triangles
+    -- Effet de pulsation pour les triangles
     local pulse = 0
     if isSpinning then
         pulse = math.sin(SysTime() * 5) * 0.3 + 0.7
@@ -524,7 +520,7 @@ function PANEL:PaintOver(w, h)
         pulse = 1
     end
     
-    -- Top triangle
+    -- Triangle du haut
     surface.SetDrawColor(255, 255, 255, 255 * pulse)
     surface.DrawPoly({
         {x = centerX, y = indicatorTop},
@@ -532,7 +528,7 @@ function PANEL:PaintOver(w, h)
         {x = centerX + triangleSize, y = indicatorTop - triangleSize}
     })
     
-    -- Bottom triangle
+    -- Triangle du bas
     surface.SetDrawColor(255, 255, 255, 255 * pulse)
     surface.DrawPoly({
         {x = centerX, y = indicatorBottom},

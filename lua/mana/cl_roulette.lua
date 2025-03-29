@@ -223,12 +223,10 @@ function PANEL:CreateItems()
         itemPanel:SetPos((i-1) * (ITEM_WIDTH + ITEM_SPACING), 0)
         
         local rarityColor
-        if item.rarity <= 0.1 then
-            rarityColor = Color(255, 0, 255) -- Légendaire (violet)
-        elseif item.rarity <= 1 then
-            rarityColor = Color(255, 165, 0) -- Épique (orange)
+        if item.rarity <= 1 then
+            rarityColor = Color(255, 0, 0) -- Épique/Légendaire (rouge)
         elseif item.rarity <= 5 then
-            rarityColor = Color(0, 112, 221) -- Rare (bleu)
+            rarityColor = Color(0, 255, 0) -- Rare (vert)
         else
             rarityColor = Color(255, 255, 255) -- Commun (blanc)
         end
@@ -485,9 +483,6 @@ function PANEL:Paint(w, h)
     -- Draw rerolls remaining
     local rerolls = LocalPlayer():GetManaRerolls()
     draw.SimpleText("Rerolls restants: " .. rerolls, "mana.title", w/2, frameY + FRAME_HEIGHT + BUTTON_HEIGHT + 40, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-    
-    -- Afficher le titre
-    draw.SimpleText("Roulette des Magies", "mana.title", w/2, frameY - 40, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     
     -- IMPORTANT: Draw the frame BEFORE the button is rendered in PaintOver
     -- This is the key change to make sure the frame is behind the button

@@ -45,7 +45,7 @@ local selectedPower = nil
 local startOffset = 0
 local currentOffset = 0
 local currentVelocity = 0
-local initialVelocity = 2000  -- Vitesse initiale élevée (pixels/seconde)
+local initialVelocity = 1500  -- Vitesse initiale élevée (pixels/seconde)
 local finalPosition = 0
 local originalItemsWeight = {}  -- Table pour stocker les poids des items originaux
 
@@ -154,12 +154,15 @@ function PANEL:PrepareRoulette()
     -- D'abord, calculer le poids total et stocker les données originales
     for magicName, magicData in pairs(Mana.Config.Magic) do
         local rarity = magicData.Rarity or 100
-        table.insert(originalItems, {
-            name = magicName,
-            rarity = rarity
-        })
-        originalItemsWeight[magicName] = rarity
-        totalWeight = totalWeight + rarity
+        -- Vérifier que la rareté n'est pas zéro (exclusion des magies d'événement)
+        if rarity > 0 then
+            table.insert(originalItems, {
+                name = magicName,
+                rarity = rarity
+            })
+            originalItemsWeight[magicName] = rarity
+            totalWeight = totalWeight + rarity
+        end
     end
     
     -- Ensuite, créer la liste d'items avec répétition basée sur la rareté

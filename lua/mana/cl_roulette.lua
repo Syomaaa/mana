@@ -88,7 +88,7 @@ function PANEL:Init()
     self.LaunchBtn:SetSize(BUTTON_WIDTH, BUTTON_HEIGHT)
     self.LaunchBtn:SetPos(
         (ROULETTE_WIDTH - BUTTON_WIDTH) / 2, 
-        frameY + FRAME_HEIGHT + 20 -- Positionner sous l'encadrement
+        frameY + FRAME_HEIGHT - 140 -- Positionner sous l'encadrement
     )
     self.LaunchBtn:SetText("")
     self.LaunchBtn.Paint = function(s, w, h)
@@ -478,10 +478,7 @@ function PANEL:Paint(w, h)
     surface.SetMaterial(ASSETS.background)
     surface.DrawTexturedRect(0, 0, w, h)
     
-    -- Ne pas dessiner l'encadrement ici, il sera dessiné dans PaintOver
-    -- pour être au-dessus de la roulette
-    
-    -- Calculer la position de l'encadrement (pour référence)
+    -- Calculer la position de l'encadrement
     local frameX = (w - FRAME_WIDTH) / 2
     local frameY = (h - FRAME_HEIGHT) / 2
     
@@ -491,19 +488,16 @@ function PANEL:Paint(w, h)
     
     -- Afficher le titre
     draw.SimpleText("Roulette des Magies", "mana.title", w/2, frameY - 40, Color(255, 255, 255), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-end
-
--- Fonction pour dessiner la ligne d'arrêt et l'encadrement par-dessus les magies
-function PANEL:PaintOver(w, h)
-    -- D'abord dessiner l'encadrement par-dessus la roulette
-    local frameX = (w - FRAME_WIDTH) / 2
-    local frameY = (h - FRAME_HEIGHT) / 2
     
+    -- IMPORTANT: Draw the frame BEFORE the button is rendered in PaintOver
+    -- This is the key change to make sure the frame is behind the button
     surface.SetDrawColor(255, 255, 255, 255)
     surface.SetMaterial(ASSETS.frame)
     surface.DrawTexturedRect(frameX, frameY, FRAME_WIDTH, FRAME_HEIGHT)
-    
-    -- Draw the center indicator (selection line)
+end
+
+function PANEL:PaintOver(w, h)
+    -- Draw the center indicator (selection line) only
     local centerX = self.RoulettePanel:GetX() + self.RoulettePanel:GetWide() / 2
     local indicatorTop = self.RoulettePanel:GetY() - 20
     local indicatorBottom = self.RoulettePanel:GetY() + self.RoulettePanel:GetTall() + 20

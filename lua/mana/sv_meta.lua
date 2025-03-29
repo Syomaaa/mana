@@ -292,8 +292,10 @@ concommand.Add("muramana_setdouble", function(ply, cmd, args)
     Mana:SetDouble(sid, duration)
 end)
 
+-- Fonction corrigée pour gérer correctement les types
 function Mana:AddResets(ply, isreroll, amount)
-    local ent = isstring(ply) and player.GetBySteamID64(ply) or nil
+    local steamID = isstring(ply) and ply or ply:SteamID64()
+    local ent = isstring(ply) and player.GetBySteamID64(ply) or ply
     local val = (isreroll and "rerolls" or "resets")
 
     if (IsValid(ent)) then
@@ -301,10 +303,10 @@ function Mana:AddResets(ply, isreroll, amount)
         self.SQL:Query(query)
         ent:SetNWInt(isreroll and "ManaRerolls" or "ManaResets", ent:GetNWInt(isreroll and "ManaRerolls" or "ManaResets") + amount)
     else
-        self.SQL:Query("UPDATE muramana SET " .. val .. "=" .. val .. " + " .. amount .. " WHERE steamid='" .. ply .. "'")
+        self.SQL:Query("UPDATE muramana SET " .. val .. "=" .. val .. " + " .. amount .. " WHERE steamid='" .. steamID .. "'")
     end
 
-    hook.Run("OnRerollsUpdate", ply, isreroll, amount)
+    hook.Run("OnRerollsUpdate", steamID, isreroll, amount)
 end
 
 concommand.Add("muramana_addresets", function(ply, cmd, args)
@@ -314,7 +316,7 @@ concommand.Add("muramana_addresets", function(ply, cmd, args)
 end)
 
 function Mana:AddStats(ply, reset, amount)
-    local ent = isstring(ply) and player.GetBySteamID64(ply) or nil
+    local ent = isstring(ply) and player.GetBySteamID64(ply) or ply
     if (IsValid(ent)) then
         local amt = (reset == 0 and (ent:GetManaStatsGiven() + amount)) or 0
         local query = "UPDATE muramana SET statsgive=" ..amt.. " WHERE steamid='" .. ent:SteamID64() .. "'"
@@ -338,17 +340,16 @@ concommand.Add("muramana_increasestats", function(ply, cmd, args)
 end)
 
 function Mana:IncreaseMana(ply, amount)
-    local ent = isstring(ply) and player.GetBySteamID64(ply) or nil
+    local steamID = isstring(ply) and ply or ply:SteamID64()
+    local ent = isstring(ply) and player.GetBySteamID64(ply) or ply
 
     if (IsValid(ent)) then
         local query = "UPDATE muramana SET maxmana=maxmana + " .. amount .. " WHERE steamid='" .. ent:SteamID64() .. "'"
         self.SQL:Query(query)
         ent:IncreaseMana(amount)
     else
-        self.SQL:Query("UPDATE muramana SET maxmana=maxmana + " .. amount .. " WHERE steamid='" .. ply .. "'")
+        self.SQL:Query("UPDATE muramana SET maxmana=maxmana + " .. amount .. " WHERE steamid='" .. steamID .. "'")
     end
-
-    hook.Run("OnRerollsUpdate", ply, isreroll, amount)
 end
 
 concommand.Add("muramana_increasemana", function(ply, cmd, args)
@@ -358,13 +359,11 @@ concommand.Add("muramana_increasemana", function(ply, cmd, args)
 end)
 
 function Mana:GetManaInfos(ply, admin)
-
     if not IsValid(admin) then return end
 
-    local ent = isstring(ply) and player.GetBySteamID64(ply) or nil
-    local sid = IsValid(ent) and ent:SteamID64() or ply
+    local steamID = isstring(ply) and ply or ply:SteamID64()
 
-    self.SQL:Query("SELECT * FROM muramana WHERE steamid='" .. sid .. "'", function(result) 
+    self.SQL:Query("SELECT * FROM muramana WHERE steamid='" .. steamID .. "'", function(result) 
         --on success
         if result and type(result) == "table" then
             local infos = #result > 0
@@ -376,6 +375,73 @@ function Mana:GetManaInfos(ply, admin)
             net.Send(admin)
         end
     end)
+end
+
+-- Fonction corrigée pour retirer des rerolls à un joueur
+function Mana:RemoveRerolls(ply, amount)
+    local steamID = isstring(ply) and ply or ply:SteamID64()
+    local ent = isstring(ply) and player.GetBySteamID64(ply) or ply
+    
+    if (IsValid(ent)) then
+        local newAmount = math.max(0, ent:GetManaRerolls() - amount)
+        local query = "UPDATE muramana SET rerolls=" .. newAmount .. " WHERE steamid='" .. ent:SteamID64() .. "'"
+        self.SQL:Query(query)
+        ent:SetNWInt("ManaRerolls", newAmount)
+    else
+        self.SQL:Query("UPDATE muramana SET rerolls=GREATEST(0, rerolls-" .. amount .. ") WHERE steamid='" .. steamID .. "'")
+    end
+    
+    hook.Run("OnRerollsUpdate", steamID, true, -amount)
+end
+
+-- Fonction corrigée pour donner des rerolls à tous les joueurs
+function Mana:GiveRerollsToAll(amount)
+    for _, ply in ipairs(player.GetAll()) do
+        if IsValid(ply) then
+            -- Mise à jour manuelle au lieu d'appeler AddResets
+            local currentRerolls = ply:GetManaRerolls()
+            ply:SetNWInt("ManaRerolls", currentRerolls + amount)
+            
+            -- Mise à jour de la base de données
+            local steamID = ply:SteamID64()
+            self.SQL:Query("UPDATE muramana SET rerolls=" .. (currentRerolls + amount) .. " WHERE steamid='" .. steamID .. "'")
+            
+            -- Exécution du hook avec le SteamID comme chaîne
+            hook.Run("OnRerollsUpdate", steamID, true, amount)
+        end
+    end
+end
+
+-- Fonction corrigée pour augmenter le mana maximum de tous les joueurs
+function Mana:IncreaseManaForAll(amount)
+    for _, ply in ipairs(player.GetAll()) do
+        if IsValid(ply) then
+            -- Utiliser IncreaseMana directement sur la cible
+            ply:IncreaseMana(amount)
+            
+            -- Mise à jour de la base de données
+            local steamID = ply:SteamID64()
+            self.SQL:Query("UPDATE muramana SET maxmana=maxmana + " .. amount .. " WHERE steamid='" .. steamID .. "'")
+        end
+    end
+end
+
+-- Fonction corrigée pour donner des resets à tous les joueurs
+function Mana:GiveResetsToAll(amount)
+    for _, ply in ipairs(player.GetAll()) do
+        if IsValid(ply) then
+            -- Mise à jour manuelle au lieu d'appeler AddResets
+            local currentResets = ply:GetManaResets()
+            ply:SetNWInt("ManaResets", currentResets + amount)
+            
+            -- Mise à jour de la base de données
+            local steamID = ply:SteamID64()
+            self.SQL:Query("UPDATE muramana SET resets=" .. (currentResets + amount) .. " WHERE steamid='" .. steamID .. "'")
+            
+            -- Exécution du hook avec le SteamID comme chaîne
+            hook.Run("OnRerollsUpdate", steamID, false, amount)
+        end
+    end
 end
 
 hook.Add("PlayerInitialSpawn", "Mana.ReadDB", function(ply)
@@ -399,7 +465,6 @@ hook.Add("PlayerDeath", "Mana.Restart", function(ply)
         ply:Spawn()
     end)
 end)
-
 
 hook.Add("EntityTakeDamage", "Mana.ResolveDamage", function(ent, dmg)
     if (dmg:GetAttacker():IsPlayer()) then
@@ -450,7 +515,6 @@ hook.Add("PlayerSwitchWeapon", "Mana.SetWeaponizer", function(ply, old, new)
     end
 end)
 
-
 hook.Add("OnManaChange", "Mana.AssignWeapon", function(ply, mana)
     if (ply:GetManaMagic() == "") then return end
     ply:LoadManaWeapons()
@@ -478,61 +542,173 @@ hook.Add("PlayerTick", "Mana.Reneration", function(ply)
     nextTick = CurTime() + Mana.Config.RenenerationTime
 end)
 
-hook.Add("PlayerSay","Mana.AdminCmd", function( ply, args )
-
-    --infos valides ?
+hook.Add("PlayerSay", "Mana.AdminCmd", function(ply, args)
+    -- Infos valides ?
     if not IsValid(ply) or not args or args == "" then return end
-
-    --est-ce que le joueur est considéré comme un administrateur ?
+    
+    -- Est-ce que le joueur est considéré comme un administrateur ?
     if not Mana.Config.AdminCmdAccess[ply:GetUserGroup()] then return end
-
-    --est-ce l'ouverture du panel admin
+    
+    -- Est-ce l'ouverture du panel admin
     if args == "/manaadmin" then
-
         local sendStats = {}
-        for k,v in pairs (player.GetAll()) do
+        for k, v in pairs(player.GetAll()) do
             sendStats[v:SteamID()] = v._manaStats
         end
         net.Start("Mana:AdminPanel")
         net.WriteTable(sendStats)
         net.Send(ply)
-
+        
         return
-
     end
-
+    
     local argsplit = string.Explode(" ", args)
-    --pas assez de paramètres, pas besoin d'aller plus loin... (toutes les fonctions nécessitent à minima deux arguments "commande" + "steamid", le reste variera)
+    -- Pas assez de paramètres, pas besoin d'aller plus loin...
     if not argsplit or #argsplit < 2 then return end
-
-    --on récupére les arguments communs
+    
+    -- On récupère les arguments communs
     local cmd = argsplit[1]
     local sid = argsplit[2]
-
-    --est-ce que la commande est connue ?
+    
+    -- Est-ce que la commande est connue ?
     if cmd == "/manadouble" then
-
         local duration = argsplit[3] or 60
         Mana:SetDouble(sid, duration)
-
     elseif cmd == "/manareroll" then
-
         local isreroll, amount = tonumber(argsplit[3] or 0) == 1, tonumber(argsplit[4] or 1)
         Mana:AddResets(sid, isreroll, amount)
-
     elseif cmd == "/manaincrease" then
-
         local amount = tonumber(argsplit[3] or 100)
         Mana:IncreaseMana(sid, amount)
-
     elseif cmd == "/manastats" then
-
         local reset, amount = tonumber(argsplit[3] or 0), tonumber(argsplit[4] or 1)
         Mana:AddStats(sid, reset, amount)
+    elseif cmd == "/manaremovereroll" then
+        local amount = tonumber(argsplit[3] or 1)
+        Mana:RemoveRerolls(sid, amount)
+    elseif cmd == "/manamassreroll" then
+        local amount = tonumber(argsplit[2] or 1) -- Dans ce cas, le 2e paramètre est le montant
+        Mana:GiveRerollsToAll(amount)
+    elseif cmd == "/manamassmana" then
+        local amount = tonumber(argsplit[2] or 100)
+        Mana:IncreaseManaForAll(amount)
+    elseif cmd == "/manamassreset" then
+        local amount = tonumber(argsplit[2] or 1)
+        Mana:GiveResetsToAll(amount)
     end
-
 end)
 
+-- Mise à jour du traitement des messages réseau
+net.Receive("Mana:GiveManaItems", function(len, ply)
+    local mode = net.ReadString()  -- "admin" ou "friend"
+    local cmdType = net.ReadString()
+    
+    if mode == "admin" then
+        -- Vérifier si le joueur est administrateur
+        if not Mana.Config.AdminCmdAccess[ply:GetUserGroup()] then return end
+        
+        -- Traitement des commandes administratives
+        if cmdType == "cmd" then
+            local commandText = net.ReadString()
+            local args = string.Explode(" ", commandText)
+            
+            if #args < 2 then
+                ply:ChatPrint("Format de commande incorrect. Utilisez: <commande> <steamid64> <montant>")
+                return
+            end
+            
+            local cmd = args[1]
+            local targetID = args[2]
+            local amount = tonumber(args[3] or "1")
+            
+            if not amount or amount <= 0 then
+                ply:ChatPrint("Montant invalide.")
+                return
+            end
+            
+            if cmd == "mana" then
+                Mana:IncreaseMana(targetID, amount)
+                ply:ChatPrint("Mana max augmenté de " .. amount .. " pour " .. targetID)
+            elseif cmd == "reset" then
+                Mana:AddResets(targetID, false, amount)
+                ply:ChatPrint("Ajout de " .. amount .. " resets pour " .. targetID)
+            elseif cmd == "reroll" then
+                Mana:AddResets(targetID, true, amount)
+                ply:ChatPrint("Ajout de " .. amount .. " rerolls pour " .. targetID)
+            elseif cmd == "removereroll" then
+                Mana:RemoveRerolls(targetID, amount)
+                ply:ChatPrint("Retrait de " .. amount .. " rerolls pour " .. targetID)
+            elseif cmd == "stats" then
+                Mana:AddStats(targetID, 0, amount)
+                ply:ChatPrint("Ajout de " .. amount .. " stats pour " .. targetID)
+            elseif cmd == "get" then
+                Mana:GetManaInfos(targetID, ply)
+            end
+        elseif cmdType == "reset" or cmdType == "reroll" or cmdType == "mana" or cmdType == "stats" then
+            local amount = net.ReadInt(16)
+            local target = net.ReadEntity()
+            
+            if not IsValid(target) then
+                ply:ChatPrint("Joueur cible invalide.")
+                return
+            end
+            
+            if cmdType == "reset" then
+                Mana:AddResets(target, false, amount)
+                ply:ChatPrint("Ajout de " .. amount .. " resets pour " .. target:Nick())
+            elseif cmdType == "reroll" then
+                Mana:AddResets(target, true, amount)
+                ply:ChatPrint("Ajout de " .. amount .. " rerolls pour " .. target:Nick())
+            elseif cmdType == "removereroll" then
+                Mana:RemoveRerolls(target, amount)
+                ply:ChatPrint("Retrait de " .. amount .. " rerolls pour " .. target:Nick())
+            elseif cmdType == "mana" then
+                Mana:IncreaseMana(target, amount)
+                ply:ChatPrint("Mana max augmenté de " .. amount .. " pour " .. target:Nick())
+            elseif cmdType == "stats" then
+                Mana:AddStats(target, 0, amount)
+                ply:ChatPrint("Ajout de " .. amount .. " stats pour " .. target:Nick())
+            end
+        elseif cmdType == "massreroll" then
+            local amount = net.ReadInt(16)
+            Mana:GiveRerollsToAll(amount)
+            ply:ChatPrint("Ajout de " .. amount .. " rerolls pour tous les joueurs.")
+        elseif cmdType == "massmana" then
+            local amount = net.ReadInt(16)
+            Mana:IncreaseManaForAll(amount)
+            ply:ChatPrint("Mana max augmenté de " .. amount .. " pour tous les joueurs.")
+        elseif cmdType == "massreset" then
+            local amount = net.ReadInt(16)
+            Mana:GiveResetsToAll(amount)
+            ply:ChatPrint("Ajout de " .. amount .. " resets pour tous les joueurs.")
+        end
+    elseif mode == "friend" then
+        -- Traitement des dons entre amis
+        local cmdT = net.ReadString()
+        local amount = net.ReadInt(16)
+        local target = net.ReadEntity()
+        
+        if not IsValid(target) or not target:IsPlayer() then return end
+
+        if cmdT == "reset" then
+            if not (ply:GetManaResets() >= amount) then return end
+            ply:SetNWInt("ManaResets", ply:GetManaResets() - amount)
+            target:SetNWInt("ManaResets", target:GetManaResets() + amount)
+            Mana.SQL:Query("UPDATE muramana SET resets=" .. ply:GetManaResets() .. " WHERE steamid='" .. ply:SteamID64() .. "';")
+            Mana.SQL:Query("UPDATE muramana SET resets=" .. target:GetManaResets() .. " WHERE steamid='" .. target:SteamID64() .. "';")
+            DarkRP.notify(ply, 0, 4, "Vous avez donné "..amount.." resets à "..target:Name())
+            DarkRP.notify(target, 0, 4, "Vous avez reçu "..amount.." resets de "..ply:Name())
+        elseif cmdT == "reroll" then
+            if not (ply:GetManaRerolls() >= amount) then return end
+            ply:SetNWInt("ManaRerolls", ply:GetManaRerolls() - amount)
+            target:SetNWInt("ManaRerolls", target:GetManaRerolls() + amount)
+            Mana.SQL:Query("UPDATE muramana SET rerolls=" .. ply:GetManaRerolls() .. " WHERE steamid='" .. ply:SteamID64() .. "';")
+            Mana.SQL:Query("UPDATE muramana SET rerolls=" .. target:GetManaRerolls() .. " WHERE steamid='" .. target:SteamID64() .. "';")
+            DarkRP.notify(ply, 0, 4, "Vous avez donné "..amount.." rerolls à "..target:Name())
+            DarkRP.notify(target, 0, 4, "Vous avez reçu "..amount.." rerolls de "..ply:Name())
+        end
+    end
+end)
 
 hook.Add("InitPostEntity", "Mana.AutoSave", function()
     timer.Create("MuramanaSave", 60 * 15, 0, function()
